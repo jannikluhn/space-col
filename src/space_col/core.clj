@@ -50,73 +50,89 @@
     in-sphere))
 
 ;
-; space colonization helpers
-;
-(defn attractors [di pool node]
-  "Returns the set of points from the pool which have an influence on a given node.
-  
-  di denotes the influence distance."
-  (sphere-search pool node di))
-
-(defn attraction-dir [attractors node]
-  "Return the direction to which a node is pulled towards by a set of attractors.
-  
-  The result is a normalized vector."
-  (let [attr-sum (->> attractors
-                      (map #(vec- % node))
-                      (map norm)
-                      (remove nil?)
-                      (apply vec+))]
-    (norm attr-sum)))
-
-(defn victims [dk pool node]
-  "Returns the set of attractors in the pool that are too close to a given node.
-  
-  dk denotes the kill distance."
-  (if-not (nil? node)
-    (set (sphere-search pool node dk))
-    #{}))
-
-(defn offspring [ds node attraction-dir]
-  "Returns the offspring a node will have in the next step, if any."
-  (if-not (nil? attraction-dir)
-    (vec+ node (vec* attraction-dir ds))))
-
-;
 ; space colonization algorithm
 ;
-(defn init-state [attractors roots]
-  {:pool (kdtree/build-tree attractors)
-   :attractors (set attractors)
-   :new-victims #{}
-   :victims #{}
-   :new-nodes #{}
-   :nodes (set roots)
-   :new-segments #{}
+; (defn init-state [attractors roots]
+;   {:pool (kdtree/build-tree attractors)
+;    :attractors (set attractors)
+;    :new-victims #{}
+;    :victims #{}
+;    :new-nodes #{}
+;    :nodes (set roots)
+;    :new-segments #{}
+;    :segments #{}})
+
+(defn influenced-node [di vein-kdt source]
+  "Returns the vein node that is influenced by the given source node if any."
+  (let [nn (:point (kdtree/nearest-neighbor vein-kdt source))]
+    (if (<= (dist nn source) di)
+      nn)))
+
+(defn invert-map-aggregating [m]
+  "Inverts a map such that values become keys and keys are merged in sets."
+  (reduce (fn [m [k v]]
+            (update m v #(conj (set %) k))) {} m))
+
+(defn influence-sets [di vein-kdt sources]
+  "Returns a mapping from vein nodes to the set of source nodes they are influenced by."
+  (->> sources
+      (map (partial influenced-node di vein-kdt))
+      (map vector sources)
+      (remove (comp nil? second))
+      (reduce #(assoc %1 (first %2) (second %2)) {})
+      (invert-map-aggregating)))
+
+(defn influence-dir [influence-set node]
+  "Return the direction to which a node is pulled towards.
+  
+  The result is a normalized vector."
+  (let [influence-sum (->> influence-set
+                           (map #(vec- % node))
+                           (map norm)
+                           (remove nil?)
+                           (apply vec+))]
+    (norm influence-sum)))
+
+(defn offspring [ds dir node]
+  "Returns the offspring a node will have in the next step, if any."
+  (if-not (nil? dir)
+    (vec+ node (vec* dir ds))))
+
+(defn offspring-map [ds is]
+  "Returns a mapping between nodes and their offspring."
+  (->> is
+       (map (fn [[n s]] [n (offspring ds (influence-dir s n) n)]))
+       (into {})))
+
+(defn victims [dk source-kdt vein-node]
+  "Returns the set of source nodes in the kdtree that are too close to a given vein node.
+  
+  dk denotes the kill distance."
+  (if-not (nil? vein-node)
+    (set (sphere-search source-kdt vein-node dk))
+    #{}))
+
+(defn col-step [{:as params :keys [ds di dk]} {:as state :keys [vein-kdt source-kdt sources]}]
+  (let [is (influence-sets di vein-kdt sources)
+        segs (set (offspring-map ds is))
+        os (map second segs)
+        vs (apply set/union (map (partial victims dk source-kdt) os))]
+    {:vein-kdt (reduce (partial kdtree/insert) vein-kdt os)
+     :source-kdt (reduce (partial kdtree/delete) source-kdt vs)
+     :sources (set/difference sources vs)
+     :new-nodes os
+     :nodes (set/union os (:nodes state))
+     :new-victims vs
+     :victims (set/union vs (:victims state))
+     :new-segments segs
+     :segments (set/union segs (:segments state))
+     :stopped (and (empty? os) (empty? vs))}))
+
+(defn col-steps [params state]
+  (take-while (complement :stopped) (iterate (partial col-step params) state)))
+
+(defn init-state [sources roots]
+  {:vein-kdt (kdtree/build-tree roots)
+   :source-kdt (kdtree/build-tree sources)
+   :sources (set sources)
    :segments #{}})
-
-(defn col-step-node [ds di dk pool node]
-  (let [o (offspring ds node (attraction-dir (attractors di pool node) node))
-        new-nodes (if o #{o} #{})]
-    {:new-victims (set/union (victims dk pool o) (victims dk pool node))
-     :new-nodes (if o #{o} #{})
-     :new-segments (if o #{[node o]} #{})}))
-
-(defn col-step [ds di dk {:keys [pool attractors victims nodes segments] :as state}]
-  (let [node-step-results (map (partial col-step-node ds di dk pool) nodes)
-        new-victims (->> node-step-results (map :new-victims) (apply set/union))
-        new-nodes (->> node-step-results (map :new-nodes) (apply set/union))
-        new-segments (->> node-step-results (map :new-segments) (apply set/union))
-        stopped (every? :stopped node-step-results)]
-    {:pool (reduce kdtree/delete pool victims)
-     :attractors (set/difference attractors new-victims)
-     :new-victims new-victims
-     :victims (set/union victims new-victims)
-     :new-nodes new-nodes
-     :nodes (set/union nodes new-nodes)
-     :new-segments new-segments
-     :segments (set/union segments new-segments)
-     :stopped (and (empty? new-nodes) (empty? new-victims))}))
-
-(defn col-steps [ds di dk state]
-  (take-while (complement :stopped) (iterate (partial col-step ds di dk) state)))
