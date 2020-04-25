@@ -2,7 +2,8 @@
   (:require [clojure.math.numeric-tower :as math]
             [clojure.set :as set]
             [kdtree]
-            [space-col.euclid :as eu])
+            [space-col.euclid :as eu]
+            [same :refer [ish?]])
   (:import [kdtree Node]))
 
 ;
@@ -29,7 +30,9 @@
 ; space colonization algorithm
 ;
 (defn influenced-node
-  "Returns the vein node that is influenced by the given source node if any."
+  "Returns the vein node that is influenced by the given source node, if any.
+
+  `di` denotes the influence distance."
   [di vein-kdt source]
   (let [nn (:point (kdtree/nearest-neighbor vein-kdt source))]
     (if (<= (eu/dist nn source) di)
@@ -42,7 +45,9 @@
             (update m v #(conj (set %) k))) {} m))
 
 (defn influence-mapping
-  "Returns a mapping from vein nodes to the set of source nodes they are influenced by."
+  "Returns a mapping from vein nodes to the set of source nodes they are influenced by.
+
+  `di` denotes the influence distance."
   [di vein-kdt sources]
   (->> sources
        (map (partial influenced-node di vein-kdt))
@@ -52,10 +57,11 @@
        (apply hash-map)
        (invert-map-aggregating)))
 
-(defn influence-dir [sources node]
+(defn influence-dir
   "Return the direction to which a node is pulled towards by a set of sources.
-  
+
   The result is a normalized vector."
+  [sources node]
   (let [influence-sum (->> sources
                            (map #(eu/vec- % node))
                            (map eu/norm)
@@ -64,51 +70,73 @@
     (eu/norm influence-sum)))
 
 (defn branchlet-tip
-  "Returns the tip of a new branchlet, if any."
+  "Returns the tip of a new branchlet, if any.
+
+  The branchlet is given by its root and its direction `dir`. `ds` denotes the length of the
+  branchlet"
   [ds dir branchlet-root]
   (if-not (nil? dir)
     (eu/vec+ branchlet-root (eu/vec* dir ds))))
 
 (defn branchlets
-  "Returns the branchlets defined by an influence mapping."
+  "Returns the branchlets defined by an influence mapping.
+
+  `ds` denotes the steps distance."
   [ds im]
-  (map (fn [[n s]] [n (branchlet-tip ds (influence-dir s n) n)])
-       im))
+  (let [[start-nodes influence-sets] [(keys im) (vals im)]
+        dirs (map influence-dir influence-sets start-nodes)
+        tips (map (partial branchlet-tip ds) dirs start-nodes)
+        branchlets (map vector start-nodes tips)]
+    (filter (comp (complement nil?) second) branchlets)))
 
 (defn victims
   "Returns the set of source nodes in the kdtree that are too close to the given vein node.
-  
-  dk denotes the kill distance."
+
+  `dk` denotes the kill distance."
   [dk source-kdt vein-node]
   (if-not (nil? vein-node)
     (set (sphere-search source-kdt vein-node dk))
     #{}))
 
+(defn overlapping-branchlet?
+  "Returns true if start and end point of a branchlet overlaps with existing vein nodes."
+  [vein-kdt branchlet]
+  (->> branchlet
+       (map (partial kdtree/nearest-neighbor vein-kdt))
+       (map :point)
+       (map ish? branchlet)
+       (every? true?)))
+
+;
+; External API
+;
 (defn init
-  "Initializes a new state to start space colonization."
+  "Creates an initial state."
   [roots sources]
   {:vein-kdt (kdtree/build-tree roots)
    :source-kdt (kdtree/build-tree sources)})
 
-(defn step [{:as params :keys [ds di dk]} {:as state :keys [vein-kdt source-kdt]}]
-  "Advances the state of the space colonization algorithm by one step."
+(defn stopped?
+  "Returns true if the algorithm has stopped, otherwise false."
+  [{:keys [branchlets victims]}]
+  (and (some? branchlets) (some? victims) (empty? branchlets) (empty? victims)))
+
+(defn step
+  "Advances the state by one step."
+  [{:as params :keys [ds di dk]} {:as state :keys [vein-kdt source-kdt]}]
   (let [im (influence-mapping di vein-kdt (iterate-kdtree source-kdt))
-        bs (branchlets ds im)
+        bs-with-overlap (branchlets ds im)
+        bs (filter (complement (partial overlapping-branchlet? vein-kdt)) bs-with-overlap)
         new-nodes (map second bs)
         vs (->> new-nodes
                 (map (partial victims dk source-kdt))
                 (apply set/union))]
-    {:vein-kdt (reduce (partial kdtree/insert) vein-kdt new-nodes)
-     :source-kdt (reduce (partial kdtree/delete) source-kdt vs)
+    {:vein-kdt (reduce kdtree/insert vein-kdt new-nodes)
+     :source-kdt (reduce kdtree/delete source-kdt vs)
      :branchlets bs
      :victims vs}))
 
-(defn stopped? [{:keys [branchlets victims]}]
-  "Returns true if the space colonization algorithm has stopped, otherwise false."
-  (and (some? branchlets) (some? victims) (empty? branchlets) (empty? victims)))
-
 (defn steps
-  "Returns a lazy sequence of all intermediate states from the space colonization algorithm until
-  completion."
+  "Returns a lazy sequence of all intermediate states until completion."
   [params state]
   (take-while (complement stopped?) (iterate (partial step params) state)))
