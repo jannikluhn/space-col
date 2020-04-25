@@ -1,30 +1,9 @@
 (ns space-col.core
-  (:require [clojure.math.numeric-tower :as math]
-            [clojure.set :as set]
+  (:require [clojure.set :as set]
             [kdtree]
             [space-col.euclid :as eu]
-            [same :refer [ish?]])
-  (:import [kdtree Node]))
-
-;
-; kdtree extensions
-;
-(defn sphere-search
-  "Finds all points whose distance to `center` is less or equal than `radius`."
-  [tree center radius]
-  (let [box (map #(vector (- % radius) (+ % radius)) center)
-        in-box (kdtree/interval-search tree box)
-        in-sphere (filter #(<= (eu/dist % center) radius) in-box)]
-    in-sphere))
-
-(defn iterate-kdtree
-  "Returns a lazy sequence of the points stored in the tree."
-  [tree]
-  (->> tree
-       (tree-seq (partial instance? kdtree.Node) #(vector (:left %) (:right %)))
-       (remove nil?)
-       (map :value)
-       (map vec)))
+            [space-col.utils :as utils]
+            [same :refer [ish?]]))
 
 ;
 ; space colonization algorithm
@@ -38,12 +17,6 @@
     (if (<= (eu/dist nn source) di)
       nn)))
 
-(defn invert-map-aggregating
-  "Inverts a map such that values become keys and keys are merged in sets."
-  [m]
-  (reduce (fn [m [k v]]
-            (update m v #(conj (set %) k))) {} m))
-
 (defn influence-mapping
   "Returns a mapping from vein nodes to the set of source nodes they are influenced by.
 
@@ -55,7 +28,7 @@
        (remove (comp nil? second))
        (apply concat)
        (apply hash-map)
-       (invert-map-aggregating)))
+       (utils/invert-map-aggregating)))
 
 (defn influence-dir
   "Return the direction to which a node is pulled towards by a set of sources.
@@ -95,7 +68,7 @@
   `dk` denotes the kill distance."
   [dk source-kdt vein-node]
   (if-not (nil? vein-node)
-    (set (sphere-search source-kdt vein-node dk))
+    (set (utils/sphere-search source-kdt vein-node dk))
     #{}))
 
 (defn overlapping-branchlet?
@@ -124,7 +97,7 @@
 (defn step
   "Advances the state by one step."
   [{:as params :keys [ds di dk]} {:as state :keys [vein-kdt source-kdt]}]
-  (let [im (influence-mapping di vein-kdt (iterate-kdtree source-kdt))
+  (let [im (influence-mapping di vein-kdt (utils/iterate-kdtree source-kdt))
         bs-with-overlap (branchlets ds im)
         bs (filter (complement (partial overlapping-branchlet? vein-kdt)) bs-with-overlap)
         new-nodes (map second bs)
