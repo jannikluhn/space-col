@@ -135,3 +135,17 @@
   "Returns a lazy sequence of all intermediate states until completion."
   [params state]
   (take-while (complement ::stopped) (iterate (partial step params) state)))
+
+(defn inject-sources
+  "Add additional source nodes."
+  [sources {:as state :keys [::source-kdt]}]
+  (assoc state
+         ::source-kdt (reduce kdtree/insert source-kdt sources)
+         ::stopped false))
+
+(defn inject-roots
+  "Add additional root nodes."
+  [roots {:as state :keys [::vein-kdt]}]
+  (assoc state
+         ::vein-kdt (reduce kdtree/insert vein-kdt roots)
+         ::stopped false))
