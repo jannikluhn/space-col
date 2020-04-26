@@ -21,11 +21,15 @@
 (s/def ::branchlet (s/coll-of ::point :kind vector? :count 2))
 (s/def ::branchlets (s/coll-of ::branchlet :kind set?))
 (s/def ::victims (s/coll-of ::point :kind set?))
+(s/def ::new-roots (s/coll-of ::point :kind set?))
+(s/def ::new-sources (s/coll-of ::point :kind set?))
 (s/def ::stopped boolean?)
 (s/def ::state (s/keys :req [::vein-kdt
                              ::source-kdt
                              ::branchlets
                              ::victims
+                             ::new-nodes
+                             ::new-sources
                              ::stopped]))
 
 ;
@@ -113,6 +117,8 @@
    ::source-kdt (kdtree/build-tree sources)
    ::branchlets #{}
    ::victims #{}
+   ::new-roots (set roots)
+   ::new-sources (set sources)
    ::stopped false})
 
 (defn step
@@ -125,11 +131,13 @@
         vs (->> new-nodes
                 (map (partial victims dk source-kdt))
                 (apply set/union))]
-    {::vein-kdt (reduce kdtree/insert vein-kdt new-nodes)
-     ::source-kdt (reduce kdtree/delete source-kdt vs)
-     ::branchlets (set bs)
-     ::victims vs
-     ::stopped (and (empty? bs) (empty? vs))}))
+    {assoc state ::vein-kdt (reduce kdtree/insert vein-kdt new-nodes)
+                 ::source-kdt (reduce kdtree/delete source-kdt vs)
+                 ::branchlets (set bs)
+                 ::victims vs
+                 ::new-roots #{}
+                 ::new-sources #{}
+                 ::stopped (and (empty? bs) (empty? vs))}))
 
 (defn steps
   "Returns a lazy sequence of all intermediate states until completion."
@@ -138,14 +146,24 @@
 
 (defn inject-sources
   "Add additional source nodes."
-  [sources {:as state :keys [::source-kdt]}]
+  [sources {:as state :keys [::vein-kdt ::source-kdt]}]
   (assoc state
          ::source-kdt (reduce kdtree/insert source-kdt sources)
+         ::vein-kdt vein-kdt
+         ::branchlets #{}
+         ::victims #{}
+         ::new-sources (set sources)
+         ::new-roots #{}
          ::stopped false))
 
 (defn inject-roots
   "Add additional root nodes."
-  [roots {:as state :keys [::vein-kdt]}]
+  [roots {:as state :keys [::vein-kdt ::source-kdt]}]
   (assoc state
+         ::source-kdt source-kdt
          ::vein-kdt (reduce kdtree/insert vein-kdt roots)
+         ::branchlest #{}
+         ::victims #{}
+         ::new-sources #{}
+         ::new-roots (set roots)
          ::stopped false))
