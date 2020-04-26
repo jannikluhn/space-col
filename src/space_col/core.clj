@@ -3,10 +3,33 @@
             [kdtree]
             [space-col.euclid :as eu]
             [space-col.utils :as utils]
-            [same :refer [ish?]]))
+            [same :refer [ish?]]
+            [clojure.spec.alpha :as s]))
 
 ;
-; space colonization algorithm
+; Spec
+;
+(s/def ::di number?)
+(s/def ::ds number?)
+(s/def ::dk number?)
+(s/def ::params (s/keys :req [::di ::ds ::dk]))
+
+(s/def ::kdt (s/or :empty nil? :non-empty record?))
+(s/def ::vein-kdt ::kdt)
+(s/def ::source-kdt ::kdt)
+(s/def ::point (s/coll-of number? :kind vector?))
+(s/def ::branchlet (s/coll-of ::point :kind vector? :count 2))
+(s/def ::branchlets (s/coll-of ::branchlet :kind set?))
+(s/def ::victims (s/coll-of ::point :kind set?))
+(s/def ::stopped boolean?)
+(s/def ::state (s/keys :req [::vein-kdt
+                             ::source-kdt
+                             ::branchlets
+                             ::victims
+                             ::stopped]))
+
+;
+; Space colonization algorithm
 ;
 (defn influenced-node
   "Returns the vein node that is influenced by the given source node, if any.
@@ -86,17 +109,15 @@
 (defn init
   "Creates an initial state."
   [roots sources]
-  {:vein-kdt (kdtree/build-tree roots)
-   :source-kdt (kdtree/build-tree sources)})
-
-(defn stopped?
-  "Returns true if the algorithm has stopped, otherwise false."
-  [{:keys [branchlets victims]}]
-  (and (some? branchlets) (some? victims) (empty? branchlets) (empty? victims)))
+  {::vein-kdt (kdtree/build-tree roots)
+   ::source-kdt (kdtree/build-tree sources)
+   ::branchlets #{}
+   ::victims #{}
+   ::stopped false})
 
 (defn step
   "Advances the state by one step."
-  [{:as params :keys [ds di dk]} {:as state :keys [vein-kdt source-kdt]}]
+  [{:as params :keys [::ds ::di ::dk]} {:as state :keys [::vein-kdt ::source-kdt]}]
   (let [im (influence-mapping di vein-kdt (utils/iterate-kdtree source-kdt))
         bs-with-overlap (branchlets ds im)
         bs (filter (complement (partial overlapping-branchlet? vein-kdt)) bs-with-overlap)
@@ -104,12 +125,13 @@
         vs (->> new-nodes
                 (map (partial victims dk source-kdt))
                 (apply set/union))]
-    {:vein-kdt (reduce kdtree/insert vein-kdt new-nodes)
-     :source-kdt (reduce kdtree/delete source-kdt vs)
-     :branchlets bs
-     :victims vs}))
+    {::vein-kdt (reduce kdtree/insert vein-kdt new-nodes)
+     ::source-kdt (reduce kdtree/delete source-kdt vs)
+     ::branchlets (set bs)
+     ::victims vs
+     ::stopped (and (empty? bs) (empty? vs))}))
 
 (defn steps
   "Returns a lazy sequence of all intermediate states until completion."
   [params state]
-  (take-while (complement stopped?) (iterate (partial step params) state)))
+  (take-while (complement ::stopped) (iterate (partial step params) state)))
